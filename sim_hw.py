@@ -106,15 +106,39 @@ class Robot:
         tau_z = self.constant_drag * (omegas_motor[0]**2 - omegas_motor[1]**2 + omegas_motor[2]**2 - omegas_motor[3]**2)
         tau_b = np.array([tau_x, tau_y, tau_z])
 
+        v_dot = 1 / self.m * R @ f_b + np.array([0, 0, -9.81])
 
-        # v_dot = 1 / self.m * R @ f_b + np.array([0, 0, -9.81])
+        omega_dot = self.J_inv @ (np.cross(self.J @ omega, omega) + tau_b)
+        q_dot = 1 / 2 * quat_mult(q, [0, *omega])
+        p_dot = v_I
+        
+        x_dot = np.concatenate([p_dot, v_dot, q_dot, omega_dot])
+        self.state += x_dot * dt
+        self.state[IDX_QUAT_W:IDX_QUAT_Z+1] /= np.linalg.norm(self.state[IDX_QUAT_W:IDX_QUAT_Z+1]) # Re-normalize quaternion.
+        self.time += dt
+
+    # Function to update the state of the quadcopter
+    def update_wind(self, omegas_motor, dt):
+        p_I = self.state[IDX_POS_X:IDX_POS_Z+1]
+        v_I = self.state[IDX_VEL_X:IDX_VEL_Z+1]
+        q = self.state[IDX_QUAT_W:IDX_QUAT_Z+1]
+        omega = self.state[IDX_OMEGA_X:IDX_OMEGA_Z+1]
+        R = scipy.spatial.transform.Rotation.from_quat([q[1], q[2], q[3], q[0]]).as_matrix()
+
+        thrust = self.constant_thrust * np.sum(omegas_motor**2)
+        f_b = np.array([0, 0, thrust])
+        
+        tau_x = self.constant_thrust * (omegas_motor[3]**2 - omegas_motor[1]**2) * 2 * self.arm_length
+        tau_y = self.constant_thrust * (omegas_motor[2]**2 - omegas_motor[0]**2) * 2 * self.arm_length
+        tau_z = self.constant_drag * (omegas_motor[0]**2 - omegas_motor[1]**2 + omegas_motor[2]**2 - omegas_motor[3]**2)
+        tau_b = np.array([tau_x, tau_y, tau_z])
 
         # Compute the wind disturbance force
-        F0 = np.array([1.0, 0.0, 0.0])
-        omega_w = 2 * np.pi / 10
-        phi = 0
-        wind_force = F0 * np.sin(omega_w * self.time + phi)
-        v_dot = 1 / self.m * (R @ f_b + wind_force) + np.array([0, 0, -9.81])
+        # self.F0 = np.array([1.0, 0.0, 0.0])
+        # self.omega_w = 2 * np.pi / 10
+        self.phi = 0
+        self.wind_force = self.F0 * np.sin(self.omega_w * self.time + self.phi)
+        v_dot = 1 / self.m * (R @ f_b + self.wind_force) + np.array([0, 0, -9.81])
 
         omega_dot = self.J_inv @ (np.cross(self.J @ omega, omega) + tau_b)
         q_dot = 1 / 2 * quat_mult(q, [0, *omega])
@@ -189,8 +213,8 @@ def control_propellers(quad):
     t = quad.time
     T = 1.5
     r = 2*np.pi * t / T
-    # prop_thrusts = quad.control(p_d_I = np.array([np.cos(r/2), np.sin(r), 0.0]))
-    prop_thrusts = quad.control(p_d_I = np.array([1, 0, 1]))
+    prop_thrusts = quad.control(p_d_I = np.array([np.cos(r/2), np.sin(r), 0.0]))
+    # prop_thrusts = quad.control(p_d_I = np.array([1, 0, 1]))
     # Note: for Hover mode, just replace the desired trajectory with [1, 0, 1]
     # prop_thrusts = np.array([55, 50, 50, 50])
     # thrust = 50
@@ -198,47 +222,92 @@ def control_propellers(quad):
     # period = 0.5
     # prop_thrusts[int((t // period) % 4)] = thrust + 1
     # print(prop_thrusts)
-    quad.update(prop_thrusts, dt)
+
+    # quad.update(prop_thrusts, dt)
+    quad.update_wind(prop_thrusts, dt)
 
 # Main function to run the simulation
-# def main():
-#     quadcopter = Robot()
-#     def control_loop(i):
-#         for _ in range(PLAYBACK_SPEED):
-#             control_propellers(quadcopter)
-#         return get_pos_full_quadcopter(quadcopter)
-
-#     plotter = QuadPlotter()
-#     plotter.plot_animation(control_loop)
-
 def main():
     quadcopter = Robot()
-    trajectory = []
+    def control_loop(i):
+        for _ in range(PLAYBACK_SPEED):
+            control_propellers(quadcopter)
+        return get_pos_full_quadcopter(quadcopter)
 
-    simulation_time = 10
-    for _ in range(int(simulation_time / dt)):
-        control_propellers(quadcopter)
-        pos_full_quad = get_pos_full_quadcopter(quadcopter)
-        trajectory.append(pos_full_quad)
+    plotter = QuadPlotter()
+    plotter.plot_animation(control_loop)
 
-    trajectory = np.array(trajectory)
-    np.save("trajectory.npy", trajectory)
+# Main function to run the simulation and save the trajectory
+# def main():
+#     quadcopter = Robot()
+#     trajectory = []
 
-    import matplotlib.pyplot as plt
+#     simulation_time = 10
+#     for _ in range(int(simulation_time / dt)):
+#         control_propellers(quadcopter)
+#         pos_full_quad = get_pos_full_quadcopter(quadcopter)
+#         trajectory.append(pos_full_quad)
 
-    trajectory = np.load("trajectory.npy")
+#     trajectory = np.array(trajectory)
+#     np.save("trajectory.npy", trajectory)
 
-    fig = plt.figure()
-    ax = fig.add_subplot(111, projection='3d')
-    ax.plot(trajectory[:, 0, 4], trajectory[:, 1, 4], trajectory[:, 2, 4], label='Quadcopter Path')
-    ax.set_xlabel('X')
-    ax.set_ylabel('Y')
-    ax.set_zlabel('Z')
-    ax.legend()
-    plt.show()
+#     import matplotlib.pyplot as plt
+
+#     trajectory = np.load("trajectory.npy")
+
+#     fig = plt.figure()
+#     ax = fig.add_subplot(111, projection='3d')
+#     ax.plot(trajectory[:, 0, 4], trajectory[:, 1, 4], trajectory[:, 2, 4], label='Quadcopter Path')
+#     ax.set_xlabel('X')
+#     ax.set_ylabel('Y')
+#     ax.set_zlabel('Z')
+#     ax.legend()
+#     plt.show()
+
+def generate_training_data():
+    wind_forces = np.arange(0, 3, 1)
+    angular_velocities = np.arange(0.5, 2, 0.5) * 2 * np.pi
+    for wind in wind_forces:
+        for angular_velocity in angular_velocities:
+            quadcopter = Robot()
+            quadcopter.F0 = np.array([wind, 0.0, 0.0])
+            quadcopter.omega_w = angular_velocity
+            trajectory = []
+            data = []
+            simulation_time = 125
+            for _ in range(int(simulation_time / dt)):
+                control_propellers(quadcopter)
+                state = quadcopter.state
+                omega_motor = quadcopter.omega_motors
+                trajectory.append(get_pos_full_quadcopter(quadcopter))
+                data.append(np.concatenate([state[IDX_VEL_X:IDX_VEL_Z+1], state[IDX_QUAT_W:IDX_QUAT_Z+1], omega_motor, quadcopter.wind_force]))
+
+            data = np.array(data)
+            np.save(f"data/data_wind_{wind}_omega_{angular_velocity}.npy", data)
+            trajectory = np.array(trajectory)
+            np.save(f"data/trajectory_wind_{wind}_omega_{angular_velocity}.npy", trajectory)
+
+            import matplotlib.pyplot as plt
+
+            fig = plt.figure()
+            ax = fig.add_subplot(111, projection='3d')
+            ax.plot(trajectory[:, 0, 4], trajectory[:, 1, 4], trajectory[:, 2, 4], label=f'Wind {wind}, Omega {angular_velocity}')
+            ax.set_xlabel('X')
+            ax.set_ylabel('Y')
+            ax.set_zlabel('Z')
+            ax.legend()
+            plt.savefig(f"data/trajectory_wind_{wind}_omega_{angular_velocity}.png")
+            plt.close()
+
+            plt.figure()
+            plt.plot(np.arange(0, simulation_time, dt), data[:, -3], label='Wind Force X')
+            plt.plot(np.arange(0, simulation_time, dt), data[:, -2], label='Wind Force Y')
+            plt.plot(np.arange(0, simulation_time, dt), data[:, -1], label='Wind Force Z')
+            plt.xlabel('Time [s]')
+            plt.ylabel('Wind Force [N]')
+            plt.legend()
+            plt.savefig(f"data/wind_force_wind_{wind}_omega_{angular_velocity}.png")
+            plt.close()
 
 if __name__ == "__main__":
-    main()
-
-if __name__ == "__main__":
-    main()
+    generate_training_data()
